@@ -289,7 +289,7 @@ private fun GifMakerScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(ImageIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp))
+                    Icon(Icons.Filled.ImageIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(40.dp))
                     if (selectedUri == null) {
                         Text("Tap untuk pilih video", fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
                         Text("MP4, MOV, dan format umum lainnya", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
@@ -587,7 +587,7 @@ private fun StudioEntryCard(
                         modifier = Modifier.fillMaxSize()
                     )
                 } else {
-                    Icon(ImageIcon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Filled.ImageIcon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
