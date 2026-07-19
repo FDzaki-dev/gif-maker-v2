@@ -44,6 +44,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 private enum class ThemePreference { SYSTEM, LIGHT, DARK }
 private enum class Screen { MAIN, STUDIO }
@@ -150,6 +151,7 @@ private fun GifMakerScreen(
     var showThemeMenu by remember { mutableStateOf(false) }
     var estimatedSizeBytes by remember { mutableStateOf<Long?>(null) }
     var isEstimatingSize by remember { mutableStateOf(false) }
+    val cancelFlag = remember { AtomicBoolean(false) }
 
     fun loadVideoMetadata(uri: Uri, onLoaded: (Long, Int, Int) -> Unit, onFailed: () -> Unit) {
         val retriever = MediaMetadataRetriever()
@@ -202,7 +204,7 @@ private fun GifMakerScreen(
         val request = pendingRequest
         pendingRequest = null
         if (granted && request != null) {
-            runConversion(context, scope, request,
+            runConversion(context, scope, request, cancelFlag,
                 onProgress = { cur, total -> progressText = "Memproses frame $cur/$total" },
                 onDone = { message, file ->
                     isProcessing = false
@@ -407,6 +409,7 @@ private fun GifMakerScreen(
                 Button(
                     onClick = {
                         val uri = selectedUri ?: return@Button
+                        cancelFlag.set(false)
                         isProcessing = true
                         resultMessage = null
                         progressText = "Memulai…"
@@ -434,7 +437,7 @@ private fun GifMakerScreen(
                             pendingRequest = request
                             storagePermissionLauncher.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
                         } else {
-                            runConversion(context, scope, request,
+                            runConversion(context, scope, request, cancelFlag,
                                 onProgress = { cur, total -> progressText = "Memproses frame $cur/$total" },
                                 onDone = { message, file ->
                                     isProcessing = false
@@ -457,6 +460,16 @@ private fun GifMakerScreen(
                         Icon(Icons.Filled.PlayArrow, contentDescription = null)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Buat GIF")
+                    }
+                }
+
+                if (isProcessing) {
+                    OutlinedButton(
+                        onClick = { cancelFlag.set(true); progressText = "Membatalkan…" },
+                        modifier = Modifier.fillMaxWidth().height(44.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text("Batalkan")
                     }
                 }
 
@@ -621,14 +634,27 @@ private fun runConversion(
     context: android.content.Context,
     scope: kotlinx.coroutines.CoroutineScope,
     request: GifRequest,
+    cancelFlag: AtomicBoolean,
     onProgress: (Int, Int) -> Unit,
     onDone: (message: String, file: File?) -> Unit
 ) {
     scope.launch {
         val result = withContext(Dispatchers.IO) {
-            VideoToGifConverter.convert(context, request) { cur, total ->
-                onProgress(cur, total)
+            VideoToGifConverter.convert(
+                context,
+                request,
+                isCancelled = { cancelFlag.get() }
+            ) { cur, total ->
+                // GifEncoder callbacks arrive on the IO thread; hop back to Main
+                // before touching Compose state so updates are never dropped or
+                // reordered under load (mirrors how large media apps debounce
+                // progress UI from background workers).
+                scope.launch(Dispatchers.Main) { onProgress(cur, total) }
             }
+        }
+        if (result is GifResult.Failure && result.message.contains("Dibatalkan")) {
+            onDone(result.message, null)
+            return@launch
         }
         when (result) {
             is GifResult.Success -> {

@@ -23,6 +23,9 @@ data class GifRequest(
     val thumbnailFile: File? = null
 )
 
+/** Thrown internally when the user cancels an in-progress conversion; always caught in [VideoToGifConverter.convert]. */
+class ConversionCancelledException : Exception("Dibatalkan oleh pengguna")
+
 sealed class GifResult {
     data class Success(
         val outputFile: File,
@@ -61,7 +64,21 @@ object VideoToGifConverter {
     /** How many real frames to sample+encode when estimating output size. */
     private const val ESTIMATE_SAMPLE_FRAMES = 5
 
-    fun convert(context: Context, request: GifRequest, onProgress: (current: Int, total: Int) -> Unit): GifResult {
+    /** Refuse to start (or continue) an encode if the output directory has less free space than this. */
+    private const val MIN_FREE_BYTES = 20L * 1024 * 1024
+
+    fun convert(
+        context: Context,
+        request: GifRequest,
+        isCancelled: () -> Boolean = { false },
+        onProgress: (current: Int, total: Int) -> Unit
+    ): GifResult {
+        val storageDir = request.outputFile.absoluteFile.parentFile
+        val freeSpace = storageDir?.usableSpace ?: Long.MAX_VALUE
+        if (freeSpace < MIN_FREE_BYTES) {
+            return GifResult.Failure("Penyimpanan perangkat hampir penuh. Kosongkan sedikit ruang lalu coba lagi.")
+        }
+
         val retriever = MediaMetadataRetriever()
         return try {
             retriever.setDataSource(context, request.sourceUri)
@@ -73,7 +90,7 @@ object VideoToGifConverter {
             var lastSize = 0L
 
             for (attempt in 1..MAX_SIZE_FIT_ATTEMPTS) {
-                val (frameCount, height) = encodeOnce(retriever, request, width, fps, onProgress)
+                val (frameCount, height) = encodeOnce(retriever, request, width, fps, isCancelled, onProgress)
                 lastFrameCount = frameCount
                 lastSize = request.outputFile.length()
 
@@ -104,8 +121,15 @@ object VideoToGifConverter {
 
             // Unreachable, but keeps the compiler happy.
             GifResult.Success(request.outputFile, lastFrameCount, width, fps, lastSize, wasDownscaled)
+        } catch (e: ConversionCancelledException) {
+            runCatching { request.outputFile.delete() }
+            GifResult.Failure("Dibatalkan oleh pengguna.")
+        } catch (e: OutOfMemoryError) {
+            runCatching { request.outputFile.delete() }
+            GifResult.Failure("Kehabisan memori saat memproses video. Coba turunkan lebar output, FPS, atau potongan durasi, lalu coba lagi.")
         } catch (e: Exception) {
-            GifResult.Failure(e.message ?: "Unknown error while converting video to GIF")
+            runCatching { request.outputFile.delete() }
+            GifResult.Failure(e.message ?: "Terjadi kesalahan tak dikenal saat membuat GIF.")
         } finally {
             retriever.release()
         }
@@ -218,6 +242,7 @@ object VideoToGifConverter {
         request: GifRequest,
         width: Int,
         fps: Int,
+        isCancelled: () -> Boolean,
         onProgress: (current: Int, total: Int) -> Unit
     ): Pair<Int, Int> {
         val durationMs = (request.endMs - request.startMs).coerceAtLeast(1)
@@ -230,10 +255,15 @@ object VideoToGifConverter {
 
         val delayCentiseconds = (100.0 / effectiveFps).toInt().coerceAtLeast(2)
         val intervalMs = durationMs.toDouble() / frameCount
+        // Cap how often we push progress to the UI so a 240-frame render doesn't
+        // trigger 240 separate recompositions; ~40 updates is plenty smooth.
+        val progressEvery = (frameCount / 40).coerceAtLeast(1)
 
         FileOutputStream(request.outputFile).use { fos ->
             val encoder = GifEncoder(fos, width, height, loop = true)
             for (i in 0 until frameCount) {
+                if (isCancelled()) throw ConversionCancelledException()
+
                 val timeMs = request.startMs + (i * intervalMs).toLong()
                 val frame = retriever.getFrameAtTime(
                     timeMs * 1000,
@@ -258,7 +288,9 @@ object VideoToGifConverter {
                 } else {
                     frame.recycle()
                 }
-                onProgress(i + 1, frameCount)
+                if ((i + 1) % progressEvery == 0 || i == frameCount - 1) {
+                    onProgress(i + 1, frameCount)
+                }
             }
             encoder.finish()
         }
