@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.widget.VideoView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image as ImageIcon
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
@@ -31,10 +34,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.FileProvider
 import com.example.gifmaker.ui.theme.GifMakerTheme
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +78,128 @@ class MainActivity : ComponentActivity() {
 private fun formatSeconds(ms: Long): String {
     val totalSeconds = ms / 1000.0
     return String.format(Locale.US, "%.1fs", totalSeconds)
+}
+
+/**
+ * Inline video preview: shows the picked video, a play/pause button, and a
+ * seekbar the user can drag to scrub. Playback loops within [trimStartMs,
+ * trimEndMs] so the preview always reflects exactly what will end up in the
+ * GIF, the same way trim previews work in generic gif/video-clip apps.
+ */
+@Composable
+private fun VideoPreviewPlayer(
+    uri: Uri,
+    trimStartMs: Long,
+    trimEndMs: Long
+) {
+    var isPlaying by remember { mutableStateOf(false) }
+    var currentPositionMs by remember(uri) { mutableStateOf(trimStartMs) }
+    var isUserSeeking by remember { mutableStateOf(false) }
+    var previewError by remember(uri) { mutableStateOf(false) }
+    val videoViewRef = remember(uri) { mutableStateOf<VideoView?>(null) }
+
+    // If the trim window moves, stop and snap the preview back to the new start
+    // rather than silently playing a stale range.
+    LaunchedEffect(trimStartMs, trimEndMs, uri) {
+        isPlaying = false
+        videoViewRef.value?.pause()
+        runCatching { videoViewRef.value?.seekTo(trimStartMs.toInt()) }
+        currentPositionMs = trimStartMs
+    }
+
+    // While playing, poll position (VideoView has no position-changed callback)
+    // and loop back to trimStart once we reach trimEnd.
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            val vv = videoViewRef.value
+            if (vv != null && !isUserSeeking) {
+                val pos = vv.currentPosition.toLong()
+                if (pos >= trimEndMs) {
+                    runCatching { vv.seekTo(trimStartMs.toInt()) }
+                    currentPositionMs = trimStartMs
+                } else {
+                    currentPositionMs = pos
+                }
+            }
+            delay(120)
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color.Black),
+            contentAlignment = Alignment.Center
+        ) {
+            if (previewError) {
+                Text("Pratinjau tidak tersedia untuk video ini.", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+            } else {
+                AndroidView(
+                    factory = { ctx ->
+                        VideoView(ctx).apply {
+                            setVideoURI(uri)
+                            setOnPreparedListener { mp ->
+                                mp.isLooping = false
+                                runCatching { seekTo(trimStartMs.toInt()) }
+                            }
+                            setOnErrorListener { _, _, _ -> previewError = true; true }
+                            videoViewRef.value = this
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+                IconButton(
+                    onClick = {
+                        val vv = videoViewRef.value ?: return@IconButton
+                        if (isPlaying) {
+                            vv.pause()
+                            isPlaying = false
+                        } else {
+                            val pos = vv.currentPosition.toLong()
+                            if (pos >= trimEndMs || pos < trimStartMs) {
+                                runCatching { vv.seekTo(trimStartMs.toInt()) }
+                            }
+                            runCatching { vv.start() }
+                            isPlaying = true
+                        }
+                    },
+                    modifier = Modifier
+                        .size(56.dp)
+                        .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Jeda" else "Putar pratinjau",
+                        tint = Color.White
+                    )
+                }
+            }
+        }
+
+        if (!previewError) {
+            val safeEnd = trimEndMs.coerceAtLeast(trimStartMs + 1)
+            Slider(
+                value = currentPositionMs.toFloat().coerceIn(trimStartMs.toFloat(), safeEnd.toFloat()),
+                onValueChange = {
+                    isUserSeeking = true
+                    currentPositionMs = it.toLong()
+                },
+                onValueChangeFinished = {
+                    runCatching { videoViewRef.value?.seekTo(currentPositionMs.toInt()) }
+                    isUserSeeking = false
+                },
+                valueRange = trimStartMs.toFloat()..safeEnd.toFloat()
+            )
+            Text(
+                "${formatSeconds(currentPositionMs - trimStartMs)} / ${formatSeconds(trimEndMs - trimStartMs)} (pratinjau potongan)",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+    }
 }
 
 /** Holds settings that Studio's "Edit ulang" can hand back to the main screen. */
@@ -308,6 +435,7 @@ private fun GifMakerScreen(
             }
 
             if (selectedUri != null && durationMs > 0) {
+                val previewUri = selectedUri ?: return@Column
                 val startMs = (trimRange.start * durationMs).toLong()
                 val endMs = (trimRange.endInclusive * durationMs).toLong()
                 val fpsInt = fps.toInt().coerceIn(5, 24)
@@ -334,6 +462,8 @@ private fun GifMakerScreen(
                     }
                     isEstimatingSize = false
                 }
+
+                VideoPreviewPlayer(uri = previewUri, trimStartMs = startMs, trimEndMs = endMs.coerceAtLeast(startMs + 1))
 
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text("Potong bagian video", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)

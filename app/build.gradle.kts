@@ -11,14 +11,32 @@ android {
         applicationId = "com.example.gifmaker"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
+    }
+
+    signingConfigs {
+        create("release") {
+            // A dedicated, persistent keystore committed under app/keystore/ —
+            // NOT a Play Store production key. It exists purely so every CI
+            // build is signed with the SAME certificate; otherwise a fresh
+            // ephemeral debug.keystore per GitHub Actions run would make each
+            // APK unable to install over the previous one ("package conflicts
+            // with an existing package"). Fine for personal sideloading; if
+            // this app is ever published to Play Store, generate a real
+            // private keystore instead and never commit it.
+            storeFile = file("keystore/release.keystore.jks")
+            storePassword = "gifmaker123"
+            keyAlias = "gifmaker"
+            keyPassword = "gifmaker123"
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

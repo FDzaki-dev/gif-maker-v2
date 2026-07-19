@@ -1,4 +1,4 @@
-name: Build debug APK
+name: Build release APK
 
 on:
   workflow_dispatch:
@@ -22,11 +22,11 @@ jobs:
         with:
           gradle-version: '8.7'
 
-      - name: Build debug APK
-        run: gradle assembleDebug
+      - name: Build release APK (minified, shrunk, signed)
+        run: gradle assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: gif-maker-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: gif-maker-release-apk
+          path: app/build/outputs/apk/release/app-release.apk
